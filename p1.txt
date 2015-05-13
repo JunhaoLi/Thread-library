@@ -1,0 +1,814 @@
+Project 1--CPS 310 (Spring 2015)
+
+Worth: 10% total grade
+Assigned: Monday, January 26, 2015
+Due: Monday, February 16, 2015
+
+1 Overview
+
+Project 1 will give you experience writing simple multi-threaded
+programs using monitors and will help you understand how threads are
+implemented.
+
+The project has two parts. In the first part (Project 1d), you will
+write a simple concurrent program that schedules deli orders. This
+concurrent program will use a thread library that we provide. In the
+second part (Project 1t), you will implement your own thread library.
+
+2 Thread library interface
+
+The library package we will use for this project is called dthreads.
+This section describes the interface to the thread library for Project
+1d. You will write a multi-threaded program that uses this interface.
+
+int dthreads_init(dthreads_func_t func, void *arg)
+
+    dthreads_init initializes the thread library. A user program
+    should call dthreads_init exactly once (before calling any
+    other thread functions). dthreads_init creates and runs the
+    first thread. This first thread is initialized to call the
+    function pointed to by func with the single argument arg. Note
+    that a successful call to dthreads_init will not return to the
+    calling function. Instead, control transfers to func, and the
+    function that calls dthreads_init will never execute again.
+    
+int dthreads_start(dthreads_func_t func, void *arg)
+
+    dthreads_start is used to create a new thread. When the newly
+    created thread starts, it will call the function pointed to by
+    func and pass it the single argument arg.
+
+int dthreads_yield(void)
+
+    dthreads_yield causes the current thread to yield the CPU to the
+    next runnable thread. It has no effect if there are no other
+    runnable threads. dthreads_yield is used to test the thread
+    library. A normal concurrent program should not depend on
+    dthreads_yield; nor should a normal concurrent program produce
+    incorrect answers if dthreads_yield calls are inserted
+    arbitrarily.
+
+int dthreads_lock(unsigned int lock)
+int dthreads_unlock(unsigned int lock)
+int dthreads_wait(unsigned int lock, unsigned int cond)
+int dthreads_signal(unsigned int lock, unsigned int cond)
+int dthreads_broadcast(unsigned int lock, unsigned int cond)
+
+    dthreads_lock, dthreads_unlock, dthreads_wait, dthreads_signal,
+    and dthreads_broadcast implement Mesa monitors in your thread
+    library. We will cover the semantics of Mesa monitors in lecture.
+
+    A lock is identified by an unsigned integer (0 - 0xffffffff). Each
+    lock has a set of condition variables associated with it (numbered
+    0 - 0xffffffff), so a condition variable is identified uniquely by
+    the tuple (lock number, cond number). Programs can use arbitrary
+    numbers for locks and condition variables (i.e., they need not be
+    numbered from 0 - n).
+
+Each of these functions returns -1 on failure. Each of these functions
+returns 0 on success, except for dthreads_init, which does not return
+at all on success.
+    
+Here is the file "dthreads.h". DO NOT MODIFY OR RENAME IT. dthreads.h
+will be included by programs that use the thread library, and should
+also be included by your library implementation.
+
+-------------------------------------------------------------------------------
+/*
+ * dthreads.h -- public interface to thread library
+ *
+ * This file should be included in both the thread library and
+ * application programs that use the thread library.
+ */
+#ifndef _DTHREADS_H
+#define _DTHREADS_H
+
+#define STACK_SIZE 262144	/* size of each thread's stack */
+
+typedef void (*dthreads_func_t) (void *);
+
+extern int dthreads_init(dthreads_func_t func, void *arg);
+extern int dthreads_start(dthreads_func_t func, void *arg);
+extern int dthreads_yield(void);
+extern int dthreads_lock(unsigned int lock);
+extern int dthreads_unlock(unsigned int lock);
+extern int dthreads_wait(unsigned int lock, unsigned int cond);
+extern int dthreads_signal(unsigned int lock, unsigned int cond);
+extern int dthreads_broadcast(unsigned int lock, unsigned int cond);
+
+/*
+ * begin_preemptions() can be used in testing to configure the
+ * generation of interrupts (which in turn lead to preemptions). 
+ *
+ * The sync and async parameters allow several styles of preemptions:
+ *
+ *     1. async = true: generate asynchronous preemptions every 10 ms
+ *     using SIGALRM. These are non-deterministic.
+ *
+ *     2. sync = true: generate synchronous, pseudo-random preemptions
+ *     before interrupt_disable and after interrupt_enable. You can
+ *     generate different (but deterministic) preemption patterns by
+ *     changing random_seed.
+ *
+ *
+ * begin_preemptions() should be called (at most once) in the
+ * application function started by dthreads_init(). Make sure this is
+ * after the thread system is done being initialized.
+ * 
+ * If begin_preemptions() is not called, no interrupts will be
+ * generated.
+ *
+ * 
+ * The code for begin_preemptions is in interrupt.cc, but the
+ * declaration is in dthreads.h because it's part of the public thread
+ * interface.  
+ */ 
+
+extern void begin_preemptions(bool async, bool sync, int random_seed);
+
+#endif /* _DTHREADS_H */
+-------------------------------------------------------------------------------
+
+begin_preemptions() is part of the interrupt library we provide
+(libinterrupt.a), but its declaration is included as part of the
+interface that application programs include when using the thread
+library. Application programs can call begin_preemptions() to
+configure whether (and how) interrupts are generated during the
+program. As discussed in class, these interrupts can preempt a running
+thread and start the next ready thread (by calling dthreads_yield()). If
+you want to test a program in the presence of these preemptions, have
+the application program call begin_preemptions() once in the beginning
+of the function started by dthreads_init().
+
+3 Concurrent Deli (25 points)
+
+To complete this part of Project 1, you will need proj1d.tar.gz.
+
+In this part, you will write a concurrent program to simulate a
+deli. We will provide a working thread library (dthreads.o) for you to
+use while testing your deli simulation. When you later write your
+thread library, the deli program will also help you test your thread
+library (and vice versa).
+
+The deli you will simulate has a list of 1,000 sandwiches, and each
+sandwich is assigned its own unique number between 0 and 999 on the
+menu. Sandwiches that are numerically close share many of the same
+ingredients. For example, a classic reuben (corned beef, swiss cheese,
+sauerkraut, and Russian dressing on rye) might be sandwich number 2, a
+"Dinty moore" (corned beef, lettuce, tomato, and Russian dressing on
+rye) might be sandwich number 4, and a "BBQ Chicken" (pulled BBQ
+chicken with white cheddar on a challah bun) might be sandwich number
+977.
+
+The deli contains one master sandwich maker and a variable number of
+cashiers, who take orders from queued customers. The cashiers and
+sandwich maker communicate via a fixed-size cork board. Cashiers post
+orders on the board so that the sandwich maker knows (1) what to
+prepare, and (2) which cashier handled the order. The board can hold a
+maximum number of order requests (max_orders), and cashiers must wait
+if the board is full.
+
+Your program should start by creating a specified number of cashier
+threads to read in sandwich orders from a file and one thread for the
+sandwich maker. There are no customer threads, and each cashier thread
+should receive and forward a series of sandwich requests, which are
+specified in its input file. A cashier thread must wait until the
+sandwich maker has finished the last request from the cashier before
+submitting its next order to ensure that a cashier’s orders are
+completed in FIFO order. This is to prevent a customer from getting
+upset because someone behind them in line received their sandwich
+first. Also, as stated previously, because the sandwich maker's board
+has limited capacity, cashiers may need to wait for an open spot to
+appear. A cashier thread finishes after all the sandwiches in its
+input file have been prepared by the sandwich maker.
+
+While orders received by each cashier thread are prepared in FIFO
+order, the sandwich maker does NOT prepare sandwiches from the board
+in FIFO order. Instead, the sandwich maker’s thread chooses the next
+sandwich based on how similar it is to the one it just completed. This
+way the sandwich maker can reduce latency between sandwiches by
+re-using as many materials as possible from sandwich to sandwich. In
+other words, the next sandwich that the sandwich maker should make is
+the one with the number on the board that is closest to the last
+sandwich’s. The maker is initialized with her last sandwich as -1.
+
+Keep the cork board as full as possible to minimize average time
+between sandwiches. That is, your sandwich-maker thread should only
+handle a request when the cork board has the largest possible number
+of orders. This gives the maker thread the largest number of
+sandwiches to choose from. Note that the "largest number of orders”
+varies depending on how many cashier threads are still active. When at
+least max_orders cashier threads are alive, the largest possible
+number of requests on the board is max_orders. When fewer than
+max_orders cashier threads are alive, the largest number of orders on
+the board is equal to the number of living cashier threads. You will
+probably want to maintain the number of living cashier threads as
+shared state.
+
+3.1 Input
+
+Your program will be called with several command-line arguments. The
+first argument specifies the maximum number of orders that the cork
+board can hold. The rest of the arguments specify a list of input
+files (one input file per cashier). I.e., the input file for cashier
+c is argv[c+2], where 0 <= c < (number of cashiers). The number
+of cashier threads should be deduced from the number of input files
+specified.
+
+The input file for each cashier contains that cashier’s series of
+sandwich orders. Each line of the input file specifies the requested
+sandwich (0 to 999). You may assume that input files are formatted
+correctly. Open each input file read-only (use ifstream rather than
+fstream).
+
+3.2 Output
+
+After issuing a request, a cashier thread should call (note the space
+characters in the strings):
+
+    cout << “POSTED: cashier " << cashier << "
+    sandwich " << sandwich << endl;
+
+An order is available to be made (i.e., has been posted to the board)
+when the cashier thread prints this line.
+
+After making a sandwich, the maker thread should make the following
+call (note the space characters in the strings):
+
+    cout << “READY: cashier " << cashier << "
+    sandwich " << sandwich << endl;
+
+An order is considered to be complete and off the board when the
+sandwich-maker thread prints this line.
+
+Your program should not generate any other output.
+
+Note that the console is shared between the different threads. Hence
+the couts in your program must be protected by a monitor lock to
+prevent interleaving output from multiple threads.
+
+3.3 Sample input/output
+
+Here is an example set of input files (sw.in0 - sw.in4). These sample
+input files will be available at here.
+
+sw.in0     sw.in1     sw.in2     sw.in3     sw.in4
+--------   --------   --------   --------   --------
+53         914        827        302        631
+785        350        567        230        11
+
+
+Here is one of several possible correct outputs from running the deli
+simulation with the following command:
+READY:
+    deli 3 sw.in0 sw.in1 sw.in2 sw.in3 sw.in4
+
+(The final line of the output is produced by the thread library, not
+the deli simulation.)
+-------------------------------------------------------------------------------
+POSTED: cashier 0 sandwich 53
+POSTED: cashier 1 sandwich 914
+POSTED: cashier 2 sandwich 827
+READY: cashier 0 sandwich 53
+POSTED: cashier 3 sandwich 302
+READY: cashier 3 sandwich 302
+POSTED: cashier 4 sandwich 631
+READY: cashier 4 sandwich 631
+POSTED: cashier 0 sandwich 785
+READY: cashier 0 sandwich 785
+POSTED: cashier 3 sandwich 230
+READY: cashier 2 sandwich 827
+POSTED: cashier 4 sandwich 11
+READY: cashier 1 sandwich 914
+POSTED: cashier 2 sandwich 567
+READY: cashier 2 sandwich 567
+POSTED: cashier 1 sandwich 350
+READY: cashier 1 sandwich 350
+READY: cashier 3 sandwich 230
+READY: cashier 4 sandwich 11
+Thread library exiting.
+-------------------------------------------------------------------------------
+
+3.4 Tips
+
+We will provide a working thread library (dthreads.o) for you to use
+while testing your deli. You should first get your deli working
+without preemption, then test it with preemption enabled (Section 2
+explains how to configure preemptions in your testing).
+
+4 Thread Library (64 points)
+
+In this part, you will write a library to support multiple threads
+within a single Linux process. The interface to your thread library is
+similar to the thread library you used for your deli simulation, but
+supports semaphores rather than locks and condition variables. The
+header for the library is called 1t.h and is defined as follows:
+
+/*
+ * 1t.h -- public interface to Project 1t thread library
+ *
+ * This file should be included in both the thread library and
+ * application programs that use the thread library.
+ * 
+ */
+#ifndef _1T_H
+#define _1T_H
+
+#define STACK_SIZE 262144	/* size of each thread's stack */
+
+typedef void (*dthreads_func_t) (void *);
+
+extern int dthreads_init(dthreads_func_t func, void *arg);
+extern int dthreads_start(dthreads_func_t func, void *arg);
+extern int dthreads_yield(void);
+
+/* dthreads_seminit: takes a new semaphore identifier (sem) and an
+ * initial value for that semaphore; returns 0 on success or -1 
+ * for an error */
+extern int dthreads_seminit(unsigned int sem, unsigned int value);
+
+/* dthreads_semup: takes the identifier for an initialized semaphore and
+ * increments its value; returns zero on success or -1 for an error */
+extern int dthreads_semup(unsigned int sem);
+
+/* dthreads_semdown: takes the identifier for an initialized semaphore
+ * and returns after the semaphore's value has been decremented by
+ * the calling thread; a semaphore's value can only be decremented if
+ * its value is greater than 0; returns 0 on success or -1 for 
+ * an error */ 
+extern int dthreads_semdown(unsigned int sem);
+
+/*
+ * begin_preemptions() can be used in testing to configure the
+ * generation of interrupts (which in turn lead to preemptions).
+ *
+ * The sync and async parameters allow several styles of preemptions:
+ *
+ *     1. async = true: generate asynchronous preemptions every 10 ms 
+ *     using SIGALRM. These are non-deterministic.
+ *
+ *     2. sync = true: generate synchronous, pseudo-random preemptions
+ *     before interrupt_disable and after interrupt_enable. You can
+ *     generate different (but deterministic) preemption patterns by
+ *     changing random_seed.
+ *
+ * begin_preemptions() should be called (at most once) in the
+ * application function started by dthreads_init(). Make sure this is
+ * after the thread system is done being initialized.
+ *
+ * If begin_preemptions() is not called, no interrupts will be
+ * generated.
+ *
+ * The code for begin_preemptions is in interrupt.cc, but the
+ * declaration is in 1t.h because it's part of the public thread
+ * interface. 
+ */
+extern void begin_preemptions(bool async, bool sync, int random_seed);
+
+#endif /* _1T_H */
+
+4.1 Creating and swapping threads
+
+You will be implementing your thread library on x86 PCs running the
+Linux operating system. Linux provides some library calls (getcontext,
+makecontext, swapcontext) to help implement user-level thread
+libraries. You will need to read the manual pages for these calls. As
+a summary, here's how to use these calls to create a new thread:
+
+    #include <ucontext.h>
+
+    /*
+     * Initialize a context structure by copying the current thread's
+     * context.
+     */
+    getcontext(ucontext_ptr); // ucontext_ptr has type (ucontext_t *)
+    /*
+     * Direct the new thread to use a different stack. Your thread
+     * library should allocate STACK_SIZE bytes for each thread's
+     * stack.
+     */
+    char *stack = new char [STACK_SIZE];
+    ucontext_ptr->uc_stack.ss_sp = stack;
+    ucontext_ptr->uc_stack.ss_size = STACK_SIZE;
+    ucontext_ptr->uc_stack.ss_flags = 0;
+    ucontext_ptr->uc_link = NULL;
+    /*
+     * Direct the new thread to start by calling start(arg1, arg2).
+     */
+    makecontext(ucontext_ptr, (void (*)()) start, 2, arg1, arg2);
+
+Use swapcontext to save the context of the current thread and switch
+to the context of another thread. Read the Linux manual pages for more
+details.
+
+4.2 Deleting a thread and exiting the program
+
+A thread finishes when it returns from the function that was specified
+in dthreads_start. Remember to de-allocate any memory allocated by the
+library for the thread (do this AFTER the thread is really done using
+it).
+
+When there are no runnable threads in the system (e.g., all threads
+have finished, or all threads are deadlocked), your thread library
+should execute the following code:
+
+    cout << "Thread library exiting.\n";
+    exit(0);
+
+4.3 Ensuring atomicity
+
+To ensure atomicity of multiple operations, your thread library will
+enable and disable interrupts. Since this is a user-level thread
+library, it can't manipulate the hardware interrupt mask. Instead, we
+provide a library (libinterrupt.a) that simulates software
+interrupts. Here is the file "interrupt.h", which describes the
+interface to the interrupt library that your thread library will use.
+DO NOT MODIFY IT OR RENAME IT. interrupt.h will be included by your
+thread library (#include "interrupt.h"), but will NOT be included in
+application programs that use the thread library.
+
+-------------------------------------------------------------------------------
+/*
+ * interrupt.h -- interface to manipulate simulated hardware
+ * interrupts.
+ *
+ * This file should be included in the thread library, but NOT in the
+ * application program that uses the thread library.
+ */
+#ifndef _INTERRUPT_H
+#define _INTERRUPT_H
+
+/*
+ * interrupt_disable() and interrupt_enable() simulate the hardware's
+ * interrupt mask. These functions provide a way to make sections of
+ * the thread library code atomic.
+ *
+ * assert_interrupts_disabled() and assert_interrupts_enabled() can be
+ * used as error checks inside the thread library. They will assert
+ * (i.e., abort the program and dump core) if the condition they test
+ * for is not met.
+ *
+ * These functions/macros should only be called in the thread library
+ * code. They should NOT be used by the application program that uses
+ * the thread library; application code should use locks to make
+ * sections of the code atomic.
+ */
+extern void interrupt_disable(void);
+extern void interrupt_enable(void);
+extern "C" {extern int test_set_interrupt(void);}
+
+#define assert_interrupts_disabled()
+ \
+	assert_interrupts_private(__FILE__, __LINE__, true)
+#define assert_interrupts_enabled()
+ \
+	assert_interrupts_private(__FILE__, __LINE__, false)
+
+
+/*
+ * assert_interrupts_private is a private function for the interrupt
+ * library. Your thread library should not call it directly.
+ */
+extern void assert_interrupts_private(char *, int, bool);
+
+#endif /* _INTERRUPT_H */
+-------------------------------------------------------------------------------
+
+Note that interrupts should be disabled only when executing in your
+thread library's code. The code outside your thread library should
+never execute with interrupts disabled.
+
+4.4 Scheduling order
+
+This section describe the specific scheduling order that your thread
+library should follow. Remember that a correct concurrent program must
+work for all thread interleavings.
+
+All scheduling queues should be FIFO. This includes the ready queue as
+well as the queue of threads waiting on a semaphore. Threads blocked
+on a semaphore should be unblocked by other threads via
+dthreads_semup() in the same order in which the dthreads_semdown() was
+called.
+
+When a thread calls dthreads_start, the caller does not yield the
+CPU. The newly created thread is put on the ready queue but is not
+executed right away.
+
+When a thread calls dthreads_semup, the caller does not yield the
+CPU. If a thread is unblocked as a result of the dthreads_semup call,
+that thread is put on the ready queue but is not executed right away.
+
+4.5 Error handling
+
+Operating system code should be robust. There are three sources of
+errors that OS code should handle. The first and most common source of
+errors come from misbehaving user programs. Your thread library must
+detect when a user program misuses thread functions (e.g., calling
+another thread function before dthreads_init, calling dthreads_init
+more than once, misusing semaphores, a thread that tries to
+re-initialize a semaphore, etc.). A second source of error comes from
+resources that the OS uses, such as hardware devices. Your thread
+library must detect if one of the lower-level functions it calls
+returns an error (e.g., C++'s new operator throws an exception because
+the system is out of memory). For these first two sources of errors,
+the thread function should detect the error and return -1 to the user
+program (it should not print any error messages). User programs can
+then detect the error and retry or exit.
+
+A third source of error is when the OS code itself (in this case, your
+thread library) has a bug. During development (which includes this
+entire semester), the best behavior in this case is for the OS to
+detect the bug quickly and assert (this is called a "panic" in kernel
+parlance). You should use assertion statements copiously in your
+thread library to check for bugs in your code. These error checks are
+essential in debugging concurrent programs, because they help flag
+error conditions early.
+
+We will not provide you with an exhaustive list of errors that you
+should catch. OS programmers must have a healthy (?) sense of paranoia
+to make their system robust, so part of this assignment is thinking of
+and handling lots of errors. Unfortunately, there will be some errors
+that are not possible to handle, because the thread library shares the
+address space with the user program and can thus be corrupted by the
+user program.
+
+There are certain behaviors that are arguably errors or not. For
+example, deadlock should not be considered an error. Ask on Piazza if
+you're unsure whether you should consider a certain behavior an error.
+
+Hint: Autograder test cases 16 and 17 check how well your thread
+library handles errors.
+
+4.6 Managing ucontext structs
+
+Do not use ucontext structs that are created by copying another
+ucontext struct. Instead, create ucontext structs through
+getcontext/makecontext, and manage them by passing or storing pointers
+to ucontext structs, or by passing/storing pointers to structs that
+contain a ucontext struct (or by passing/storing pointers to structs
+that contain a pointer to a ucontext struct, but this is
+overkill). That way the original ucontext struct need never be copied.
+
+Why is it a bad idea to copy a ucontext struct? The answer is that you
+don't know what's in a ucontext struct. Byte-for-byte copying (e.g.,
+using memcpy) can lead to errors unless you know what's in the struct
+you're copying. In the case of a ucontext struct, it happens to
+contain a pointer to itself (viz. to one of its data members). If you
+copy a ucontext using memcpy, you will copy the value of this pointer,
+and the NEW copy will point to the OLD copy's data member. If you
+later deallocate the old copy (e.g., if it was a local variable), then
+the new copy will point to garbage. Copying structs is also a bad idea
+for performance (the ucontext struct is 348 bytes on Linux/x86).
+
+Unfortunately, it is rather easy to accidentally copy ucontext
+structs.
+
+Some of the common ways are:
+
+    passing a ucontext by value into a function
+    copying the ucontext struct into an STL queue
+    declaring a local ucontext variable is almost always a bad idea,
+    since it practically forces you to copy it
+
+You should probably be using "new" to allocate ucontext structs (or
+the struct containing a ucontext struct). If you use STL to allocate a
+ucontext struct, make sure that STL class doesn't move its objects
+around in memory. E.g., using vector to allocate ucontext structs is a
+bad idea, because vectors will move memory around when they resize.
+
+4.7 Example program
+
+Here is a short program that uses the above thread library, along with
+the output generated by the program. Make sure you understand how the
+CPU is switching between two threads (both in function loop). "i" is
+on the stack and so is private to each thread. "g" is a global
+variable and so is shared among the two threads.
+
+-------------------------------------------------------------------------------
+#include <iostream>
+#include “1t.h”
+#include <assert.h>
+
+using namespace std;
+
+int g=0;
+
+void loop(void *a) {
+  char *id;
+  int i;
+
+  id = (char *) a;
+  cout <<"loop called with id " << (char *) id << endl;
+
+  for (i=0; i<5; i++, g++) {
+    cout << id << ":\t" << i << "\t" <<
+    g << endl;
+    if (dthreads_yield()) {
+      cout << "dthreads_yield failed\n";
+      exit(1);
+    }
+  }
+}
+
+void parent(void *a) {
+  int arg;
+  arg = (int) a;
+
+  cout << "parent called with arg " << arg << endl;
+  if (dthreads_start((dthreads_func_t) loop, 
+                     (void *) "child thread")) {
+    cout << "dthreads_start failed\n";
+    exit(1);
+  }
+
+  loop( (void *) "parent thread");
+}
+
+int main() {
+  if (dthreads_init( (dthreads_func_t) parent, (void *) 100)) {
+    cout << "dthreads_init failed\n";
+    exit(1);
+  }
+}
+-------------------------------------------------------------------------------
+parent called with arg 100
+loop called with id parent thread
+parent thread:	 0  0
+loop called with id child thread
+child thread:	 0  0
+parent thread:	 1  1
+child thread:	 1  2
+parent thread:	 2  3
+child thread:	 2  4
+parent thread:	 3  5
+child thread:	 3  6
+parent thread:	 4  7
+child thread:	 4  8
+Thread library exiting.
+-------------------------------------------------------------------------------
+
+4.8 Other tips
+
+Start by implementing dthreads_init, dthreads_start, and
+dthreads_yield. Don't worry at first about disabling and enabling
+interrupts. After you get that system working, implement the semaphore
+functions. Finally, add calls to interrupt_disable() and
+interrupt_enable() to ensure your library works with arbitrary yield
+points. A correct concurrent program must work for any instruction
+interleaving. In other words, we should be able to insert a call to
+dthreads_yield anywhere in your code that interrupts are enabled.
+
+4.9 Test cases
+
+An integral (and graded) part of writing your thread library will be
+to write a suite of test cases to validate any thread library. This is
+common practice in the real world--software companies maintain a suite
+of test cases for their programs and use this suite to check the
+program's correctness after a change. Writing a comprehensive suite of
+test cases will deepen your understanding of how to use and implement
+threads, and it will help you a lot as you debug your thread library.
+
+Each test case for the thread library will be a short C++ program that
+uses functions in the thread library (e.g. the example program in
+Section 4.7). Each test case should be run without any arguments and
+should not use any input files. Test cases should exit(0) when run
+with a correct thread library (normally this will happen when your
+test case's last runnable thread ends or blocks).
+
+Your test cases should NOT call begin_preemptions(), because we are
+not evaluating how thoroughly your test suite exercises the
+interrupt_enable() and interrupt_disable() calls.
+
+Your test suite may contain up to 20 test cases. Each test case may
+generate at most 10 KB of output and must take less than 60 seconds to
+run. These limits are much larger than needed for full credit. You
+will submit your suite of test cases together with your thread
+library, and we will grade your test suite according to how thoroughly
+it exercises a thread library. See Section 6 for how your test suite
+will be graded.
+
+5 Project logistics
+
+Write your code in C++ on Linux.
+
+Compile an application program (deli.cc) with a thread library
+(dthreads.o) to create an executable (deli) as follows:
+
+    g++ -o deli -m32 dthreads.o deli.cc libinterrupt.a -ldl
+
+Use g++ (/usr/bin/g++) to compile your programs. You may use any
+functions included in the standard C++ library, including (and
+especially) the STL. You should not use any libraries other than the
+standard C++ library.
+
+Your thread library must be in a single file and must be named
+“1t.cc". Your deli simulation must also be in a single file,
+"deli.cc".
+
+We will place copies of dthreads.h, dthreads.o, interrupt.h, 1t.h, and
+libinterrupt.a in proj1.tar.gz.
+
+6 Grading, auto-grading, and formatting
+
+To help you validate your programs, your submissions will be graded
+automatically, and the result will be mailed back to you. You may then
+continue to work on the project and re-submit. The results from the
+auto-grader will not be very illuminating; they won't tell you where
+your problem is or give you the test programs. The main purpose of the
+auto-grader is it helps you know to keep working on your project
+(rather than thinking it's perfect and ending up with a 0). The best
+way to debug your program is to generate your own test cases, and
+figure out the correct answers. This is also one of the best ways to
+learn the concepts in the project.
+
+The student suite of test cases will be graded according to how
+thoroughly they test a thread library. We will judge thoroughness of
+the test suite by how well it exposes potential bugs in a thread
+library. The auto-grader will first compile a test case with a correct
+thread library and generate the correct output (on stdout, i.e. the
+stream used by cout) for this test case. Test cases should not cause
+any compile or run-time errors when compiled with a correct thread
+library. The auto-grader will then compile the test case with a set of
+buggy thread libraries. A test case exposes a buggy thread library by
+causing it to generate output (on stdout) that differs from the
+correct output. The test suite is graded based on how many of the
+buggy thread libraries were exposed by at least one test case. This is
+known as "mutation testing" in the research literature on automated
+testing.
+
+Remember that your test cases should NOT call begin_preemptions(),
+because we are not evaluating how thoroughly your test suite exercises
+the interrupt_enable() and interrupt_disable() calls. The buggy thread
+libraries will not have problems with interrupt_disable/enable.
+
+You may submit your program as many times as you like. However, only
+the first submission of each day will be graded and mailed back to
+you. Later submissions on that day will be graded and cataloged, but
+the results will not be mailed back to you. See the FAQ for why we use
+this policy.
+
+In addition to this one-per-day policy, you will be given 3 bonus
+submissions that also provide feedback. These will be used
+automatically--any submission you make after the first one of that day
+will use one of your bonus submissions. After your 3 bonus submissions
+are used up, the system will continue to provide 1 feedback per day.
+
+Each of the two parts of this project (thread library and deli
+simulation) is considered separately for the purposes of
+submission. E.g., you can submit and get feedback on your thread
+library and your deli simulation in one day (without using any bonus
+submission), and your bonus submissions for your thread library are
+distinct from your bonus submissions for your deli.
+
+Because you are writing concurrent programs, the auto-grader may
+return non-deterministic results. In particular, test cases 20-24 for
+the thread library and test case 3 and 4 for the deli use asynchronous
+preemption, which may cause non-deterministic results.
+
+Because your programs will be auto-graded, you must be careful to
+follow the exact rules in the project description:
+
+    1) (deli simulation) Only print the two items specified in Section
+    3.2.
+
+    2) (deli simulation) Your program should expect several
+    command-line arguments, with the first being the board size and
+    the others specifying the list of input files for the cashier
+    threads.
+
+    3) (thread library) The only output your thread library should
+    print is the final output line "Thread library exiting." Other
+    than this line, the only output should be that generated by the
+    program using your thread library.
+
+    4) (thread library) Your thread library should consist of a single
+    file named "1t.cc".
+
+    5) Do not modify any provided source code (dthreads.h, 1t.h,
+    interrupt.h).
+
+7 Turning in the project
+
+Use the course website to submit your files. 
+
+Here are the files you should submit for each project part:
+
+    1) deli simulation (Project 1d)
+
+        * C++ program for your deli simulator in deli.cc
+
+    2) thread library (Project 1t)
+
+        * A .zip file called 1t.zip containing a thread library in
+          file 1t.cc as well as a suite of test cases (each test case
+          is a C++ program in a separate file). The name of each test
+          case should end in ".cc".
+
+The official time of submission for your project will be the time of
+your last submission (of either project part). If you send in anything
+after the due date, your project will be considered late (and will use
+up your late days or will receive a zero).
+
+Each group member may be asked to evaluate the contributions made by
+each person in the group. If it is clear that a group member did not
+contribute to the project, they will receive zero points.
